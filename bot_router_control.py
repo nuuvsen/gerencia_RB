@@ -5,7 +5,6 @@ import telebot
 import paramiko
 
 # --- VALIDAÇÃO DAS VARIÁVEIS DE AMBIENTE ---
-# NUNCA coloque suas senhas aqui dentro. Coloque no Portainer!
 TOKEN_TELEGRAM = os.getenv("TOKEN_TELEGRAM")
 CHAT_ID_PERMITIDO = os.getenv("CHAT_ID_PERMITIDO")
 IP_MIKROTIK = os.getenv("IP_MIKROTIK")
@@ -65,13 +64,18 @@ def cmd_ajuda(message):
         "⚡ *Monitoramento:*\n"
         "/status - Exibe CPU, RAM, Uptime e Versão\n"
         "/clientes - Conta conexões PPPoE e DHCP\n"
-        "/ping [IP/Host] - Dispara pings a partir da RB\n\n"
+        "/portas - Status físico e velocidade (1Gbps/100Mbps)\n"
+        "/trafego - Consumo em tempo real e pico atual\n"
+        "/ping [IP/Host] - Dispara pings a partir da RB\n"
+        "/tracert [IP/Host] - Rastreia a rota até o destino\n\n"
         "🛠️ *Ações Operacionais:*\n"
-        "/mudar_link [nome_interface] - Sobe/Derruba interface\n"
-        "/limpar_conntrack - Limpa a tabela de conexões ativas\n"
+        "/desativar_porta [interface] - Força o desligamento\n"
+        "/ativar_porta [interface] - Força a ativação\n"
+        "/mudar_link [interface] - Alterna o status do link\n"
+        "/limpar_conntrack - Limpa a tabela de conexões\n"
         "/backup - Gera e envia os arquivos (.backup e .rsc)\n"
         "/reboot - Reinicia a RouterBoard IMEDIATAMENTE\n"
-        "/agendar_reboot [dias] - Agenda reboot automático às 03:00\n"
+        "/agendar_reboot [dias] - Agenda reboot às 03:00\n"
     )
     bot.send_message(message.chat.id, texto_menu, parse_mode="Markdown")
 
@@ -80,13 +84,11 @@ def cmd_status(message):
     if not verificar_usuario(message): return
     bot.reply_to(message, "🔍 Coletando informações da RB...")
     
-    # Executa comandos para puxar recursos do sistema
     info_cpu = executar_comando_ssh(":put [/system resource get cpu-load]")
     info_uptime = executar_comando_ssh(":put [/system resource get uptime]")
     info_ram_livre = executar_comando_ssh(":put [/system resource get free-memory]")
     info_versao = executar_comando_ssh(":put [/system resource get version]")
     
-    # Tenta converter RAM de bytes para Megabytes de forma simplificada
     try:
         ram_mb = round(int(info_ram_livre) / 1048576, 1)
         ram_texto = f"{ram_mb} MB"
@@ -102,12 +104,80 @@ def cmd_status(message):
     )
     bot.send_message(message.chat.id, relatorio, parse_mode="Markdown")
 
+@bot.message_handler(commands=['portas'])
+def cmd_portas(message):
+    if not verificar_usuario(message): return
+    bot.reply_to(message, "🔌 Lendo os sensores das portas Ethernet...")
+    
+    # Script nativo do MikroTik para rodar interface por interface checando velocidade e status do link
+    cmd = ':foreach i in=[/interface ethernet find] do={:local run [/interface get $i running]; :local nome [/interface get $i name]; :if ($run) do={/interface ethernet monitor $i once do={:put ("\E2\9C\85 " . $nome . " | UP | " . $rate)}} else={:put ("\E2\9D\8C " . $nome . " | DOWN | Sem Link")}}'
+    saida = executar_comando_ssh(cmd)
+    
+    bot.send_message(message.chat.id, f"*Status das Portas Físicas:*\n\n`{saida}`", parse_mode="Markdown")
+
+@bot.message_handler(commands=['trafego'])
+def cmd_trafego(message):
+    if not verificar_usuario(message): return
+    bot.reply_to(message, "📈 Coletando consumo em tempo real...")
+    
+    # Executa o monitoramento de tráfego do MikroTik para todas as interfaces no momento exato e estrutura em CSV
+    cmd = '/interface monitor-traffic [find] once do={:put ($name . "," . $"rx-bits-per-second" . "," . $"tx-bits-per-second")}'
+    saida = executar_comando_ssh(cmd)
+    
+    linhas = saida.strip().split('\n')
+    resultado = []
+    max_consumo = 0
+    interface_pico = "Nenhuma"
+    
+    for linha in linhas:
+        partes = linha.split(',')
+        if len(partes) == 3:
+            nome = partes[0].strip()
+            try:
+                # O MikroTik devolve bps puro. Dividimos por 1.000.000 para achar os Megabits de rede (Mbps)
+                rx_mbps = int(partes[1].strip()) / 1000000
+                tx_mbps = int(partes[2].strip()) / 1000000
+                total_mbps = rx_mbps + tx_mbps
+                
+                # Ignora interfaces zeradas ou de loopback irrelevante
+                if total_mbps > 0.1:
+                    resultado.append(f"🌐 *{nome}*: ⬇️ {rx_mbps:.1f} Mbps | ⬆️ {tx_mbps:.1f} Mbps")
+                
+                # Verifica se é a interface de maior consumo
+                if total_mbps > max_consumo:
+                    max_consumo = total_mbps
+                    interface_pico = f"*{nome}*\n(Tráfego Somado: `{total_mbps:.1f} Mbps`)"
+            except:
+                pass
+                
+    if not resultado:
+        texto = "Sem tráfego significativo trafegando no momento."
+    else:
+        texto = "\n".join(resultado)
+        texto += f"\n\n🔥 *Pico de Consumo Atual:*\nA interface mais exigida neste instante é a {interface_pico}"
+        
+    bot.send_message(message.chat.id, texto, parse_mode="Markdown")
+
+@bot.message_handler(commands=['tracert'])
+def cmd_tracert(message):
+    if not verificar_usuario(message): return
+    argumentos = message.text.split(maxsplit=1)
+    if len(argumentos) < 2:
+        bot.reply_to(message, "⚠️ Informe o IP ou domínio de destino. Ex: `/tracert 8.8.8.8`", parse_mode="Markdown")
+        return
+        
+    alvo = argumentos[1].strip()
+    bot.reply_to(message, f"🛤️ Realizando Traceroute para *{alvo}*... Aguarde, isso leva alguns segundos.", parse_mode="Markdown")
+    
+    # O count=4 garante que o processo vai encerrar e enviar de volta
+    saida = executar_comando_ssh(f"/tool traceroute address={alvo} count=4")
+    bot.send_message(message.chat.id, f"```\n{saida}\n```", parse_mode="Markdown")
+
 @bot.message_handler(commands=['clientes'])
 def cmd_clientes(message):
     if not verificar_usuario(message): return
     bot.reply_to(message, "👥 Contando clientes ativos...")
     
-    # Conta PPPoE e DHCP
     count_pppoe = executar_comando_ssh(":put [:len [/ppp active find]]")
     count_dhcp = executar_comando_ssh(":put [:len [/ip dhcp-server lease find status=bound]]")
     
@@ -117,6 +187,50 @@ def cmd_clientes(message):
         f"🌐 *DHCP Ativos:* `{count_dhcp}`"
     )
     bot.send_message(message.chat.id, relatorio, parse_mode="Markdown")
+
+@bot.message_handler(commands=['desativar_porta'])
+def cmd_desativar_porta(message):
+    if not verificar_usuario(message): return
+    try:
+        porta = message.text.split()[1].strip()
+        executar_comando_ssh(f"/interface disable [find name=\"{porta}\"]", obter_output=False)
+        bot.reply_to(message, f"🔴 Porta *{porta}* foi **DESATIVADA** com sucesso!", parse_mode="Markdown")
+    except:
+        bot.reply_to(message, "⚠️ Especifique a interface! Exemplo: `/desativar_porta ether1`", parse_mode="Markdown")
+
+@bot.message_handler(commands=['ativar_porta'])
+def cmd_ativar_porta(message):
+    if not verificar_usuario(message): return
+    try:
+        porta = message.text.split()[1].strip()
+        executar_comando_ssh(f"/interface enable [find name=\"{porta}\"]", obter_output=False)
+        bot.reply_to(message, f"🟢 Porta *{porta}* foi **ATIVADA** com sucesso!", parse_mode="Markdown")
+    except:
+        bot.reply_to(message, "⚠️ Especifique a interface! Exemplo: `/ativar_porta ether1`", parse_mode="Markdown")
+
+@bot.message_handler(commands=['mudar_link', 'Mudar_link'])
+def cmd_mudar_link(message):
+    if not verificar_usuario(message): return
+    argumentos = message.text.split(maxsplit=1)
+    if len(argumentos) < 2:
+        bot.reply_to(message, "⚠️ Use o comando informando a interface. Ex:\n`/mudar_link ether1`", parse_mode="Markdown")
+        return
+        
+    interface = argumentos[1].strip()
+    bot.reply_to(message, f"🔍 Verificando estado atual da interface *{interface}*...", parse_mode="Markdown")
+    
+    status_output = executar_comando_ssh(f"/interface print file=status; :put [/interface get [find name=\"{interface}\"] disabled]")
+    
+    if "no such item" in status_output.lower() or "error" in status_output.lower():
+        bot.send_message(message.chat.id, f"❌ Interface '{interface}' não foi localizada na RB.")
+        return
+
+    if "true" in status_output.lower():
+        executar_comando_ssh(f"/interface enable [find name=\"{interface}\"]", obter_output=False)
+        bot.send_message(message.chat.id, f"🟢 Interface *{interface}* foi **ATIVADA** com sucesso!", parse_mode="Markdown")
+    else:
+        executar_comando_ssh(f"/interface disable [find name=\"{interface}\"]", obter_output=False)
+        bot.send_message(message.chat.id, f"🔴 Interface *{interface}* foi **DESATIVADA** com sucesso!", parse_mode="Markdown")
 
 @bot.message_handler(commands=['agendar_reboot'])
 def cmd_agendar_reboot(message):
@@ -133,21 +247,15 @@ def cmd_agendar_reboot(message):
         bot.reply_to(message, "❌ Use apenas números para os dias.")
         return
 
-    # Se digitar 0, remove o agendamento
     if dias == 0:
         executar_comando_ssh("/system scheduler remove [find name=\"Reboot_Telegram\"]")
         bot.send_message(message.chat.id, "✅ Agendamento de Reboot Automático **CANCELADO**.", parse_mode="Markdown")
         return
 
     bot.reply_to(message, f"⚙️ Configurando a RB para reiniciar a cada {dias} dias, sempre às 03:00 da manhã...")
-    
-    # Remove qualquer agendamento antigo com esse nome para não duplicar
     executar_comando_ssh("/system scheduler remove [find name=\"Reboot_Telegram\"]")
-    
-    # Injeta o agendador diretamente no MikroTik
     comando_agendamento = f'/system scheduler add name="Reboot_Telegram" start-time=03:00:00 interval={dias}d on-event="/system reboot"'
     executar_comando_ssh(comando_agendamento, obter_output=False)
-    
     bot.send_message(message.chat.id, f"📅 **Sucesso!** A sua RouterBoard agora vai reiniciar sozinha a cada `{dias} dias`, sempre no horário de menor movimento (03:00 AM).", parse_mode="Markdown")
 
 @bot.message_handler(commands=['reboot'])
@@ -193,30 +301,6 @@ def cmd_backup(message):
         
     except Exception as e:
         bot.send_message(CHAT_ID_PERMITIDO, f"❌ Falha no processamento ou envio do backup: {str(e)}")
-
-@bot.message_handler(commands=['mudar_link', 'Mudar_link'])
-def cmd_mudar_link(message):
-    if not verificar_usuario(message): return
-    argumentos = message.text.split(maxsplit=1)
-    if len(argumentos) < 2:
-        bot.reply_to(message, "⚠️ Use o comando informando a interface. Ex:\n`/mudar_link ether1`", parse_mode="Markdown")
-        return
-        
-    interface = argumentos[1].strip()
-    bot.reply_to(message, f"🔍 Verificando estado atual da interface *{interface}*...", parse_mode="Markdown")
-    
-    status_output = executar_comando_ssh(f"/interface print file=status; :put [/interface get [find name=\"{interface}\"] disabled]")
-    
-    if "no such item" in status_output.lower() or "error" in status_output.lower():
-        bot.send_message(CHAT_ID_PERMITIDO, f"❌ Interface '{interface}' não foi localizada na RB.")
-        return
-
-    if "true" in status_output.lower():
-        executar_comando_ssh(f"/interface enable [find name=\"{interface}\"]", obter_output=False)
-        bot.send_message(CHAT_ID_PERMITIDO, f"🟢 Interface *{interface}* foi **ATIVADA** com sucesso!", parse_mode="Markdown")
-    else:
-        executar_comando_ssh(f"/interface disable [find name=\"{interface}\"]", obter_output=False)
-        bot.send_message(CHAT_ID_PERMITIDO, f"🔴 Interface *{interface}* foi **DESATIVADA** com sucesso!", parse_mode="Markdown")
 
 @bot.message_handler(commands=['limpar_conntrack'])
 def cmd_limpar_conntrack(message):
