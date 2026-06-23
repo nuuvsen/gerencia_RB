@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  bot-control:
+    container_name: bot-telegram-mikrotik
+    build: .
+    restart: always
+    environment:
+      - TOKEN_TELEGRAM=${TOKEN_TELEGRAM}
+      - CHAT_ID_PERMITIDO=${CHAT_ID_PERMITIDO}
+      - IP_MIKROTIK=${IP_MIKROTIK}
+      - USER_MIKROTIK=${USER_MIKROTIK}
+      - SENHA_MIKROTIK=${SENHA_MIKROTIK}
