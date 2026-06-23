@@ -63,17 +63,17 @@ def cmd_ajuda(message):
     texto_menu = (
         "⚙️ *Bot de Controle MikroTik*\n\n"
         "⚡ *Monitoramento:*\n"
-        "/status \\- Exibe CPU, RAM, Uptime e Versão\n"
-        "/clientes \\- Conta conexões PPPoE e DHCP\n"
-        "/ping `[IP/Host]` \\- Dispara pings a partir da RB\n\n"
+        "/status - Exibe CPU, RAM, Uptime e Versão\n"
+        "/clientes - Conta conexões PPPoE e DHCP\n"
+        "/ping [IP/Host] - Dispara pings a partir da RB\n\n"
         "🛠️ *Ações Operacionais:*\n"
-        "/mudar\\_link `[nome_interface]` \\- Sobe/Derruba interface\n"
-        "/limpar\\_conntrack \\- Limpa a tabela de conexões ativas\n"
-        "/backup \\- Gera e envia os arquivos \\(.backup e .rsc\\)\n"
-        "/reboot \\- Reinicia a RouterBoard IMEDIATAMENTE\n"
-        "/agendar\\_reboot `[dias]` \\- Agenda reboot automático às 03:00\n"
+        "/mudar_link [nome_interface] - Sobe/Derruba interface\n"
+        "/limpar_conntrack - Limpa a tabela de conexões ativas\n"
+        "/backup - Gera e envia os arquivos (.backup e .rsc)\n"
+        "/reboot - Reinicia a RouterBoard IMEDIATAMENTE\n"
+        "/agendar_reboot [dias] - Agenda reboot automático às 03:00\n"
     )
-    bot.send_message(message.chat.id, texto_menu, parse_mode="MarkdownV2")
+    bot.send_message(message.chat.id, texto_menu, parse_mode="Markdown")
 
 @bot.message_handler(commands=['status'])
 def cmd_status(message):
