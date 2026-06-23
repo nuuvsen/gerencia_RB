@@ -59,25 +59,25 @@ def verificar_usuario(message):
 @bot.message_handler(commands=['start', 'ajuda'])
 def cmd_ajuda(message):
     if not verificar_usuario(message): return
+    # Removemos caracteres especiais que causam erro no Markdown
     texto_menu = (
-        "⚙️ *Bot de Controle MikroTik*\n\n"
-        "⚡ *Monitoramento:*\n"
-        "/status - Exibe CPU, RAM, Uptime e Versão\n"
-        "/clientes - Conta conexões PPPoE e DHCP\n"
-        "/portas - Status físico e velocidade (1Gbps/100Mbps)\n"
-        "/trafego - Consumo em tempo real e pico atual\n"
-        "/ping [IP/Host] - Dispara pings a partir da RB\n"
-        "/tracert [IP/Host] - Rastreia a rota até o destino\n\n"
-        "🛠️ *Ações Operacionais:*\n"
-        "/desativar_porta [interface] - Força o desligamento\n"
-        "/ativar_porta [interface] - Força a ativação\n"
-        "/mudar_link [interface] - Alterna o status do link\n"
-        "/limpar_conntrack - Limpa a tabela de conexões\n"
-        "/backup - Gera e envia os arquivos (.backup e .rsc)\n"
-        "/reboot - Reinicia a RouterBoard IMEDIATAMENTE\n"
-        "/agendar_reboot [dias] - Agenda reboot às 03:00\n"
+        "⚙️ Bot de Controle MikroTik\n\n"
+        "⚡ Monitoramento:\n"
+        "/status - Exibe CPU, RAM, Uptime e Versao\n"
+        "/clientes - Conta conexoes PPPoE e DHCP\n"
+        "/ping IP_OU_HOST - Dispara pings da RB\n"
+        "/tracert IP_OU_HOST - Rastreia rota\n\n"
+        "🛠️ Acoes Operacionais:\n"
+        "/desativar_porta INTERFACE - Forca desligamento\n"
+        "/ativar_porta INTERFACE - Forca ativacao\n"
+        "/mudar_link INTERFACE - Alterna status\n"
+        "/limpar_conntrack - Limpa conexoes ativas\n"
+        "/backup - Gera e envia arquivos de backup\n"
+        "/reboot - Reinicia a RB\n"
+        "/agendar_reboot DIAS - Agenda reboot as 03:00\n"
     )
-    bot.send_message(message.chat.id, texto_menu, parse_mode="Markdown")
+    # Removi o parse_mode="Markdown" para evitar qualquer erro de sintaxe
+    bot.send_message(message.chat.id, texto_menu)
 
 @bot.message_handler(commands=['status'])
 def cmd_status(message):
