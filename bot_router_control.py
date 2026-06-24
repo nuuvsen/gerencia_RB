@@ -59,12 +59,11 @@ def verificar_usuario(message):
 @bot.message_handler(commands=['start', 'ajuda'])
 def cmd_ajuda(message):
     if not verificar_usuario(message): return
-    # Removemos caracteres especiais que causam erro no Markdown
     texto_menu = (
         "⚙️ Bot de Controle MikroTik\n\n"
         "⚡ Monitoramento:\n"
         "/status - Exibe CPU, RAM, Uptime e Versao\n"
-        "/clientes - Conta conexoes PPPoE e DHCP\n"
+        "/clientes - Lista conexoes PPPoE e DHCP ativas por bloco\n"
         "/ping IP_OU_HOST - Dispara pings da RB\n"
         "/tracert IP_OU_HOST - Rastreia rota\n\n"
         "🛠️ Acoes Operacionais:\n"
@@ -76,7 +75,6 @@ def cmd_ajuda(message):
         "/reboot - Reinicia a RB\n"
         "/agendar_reboot DIAS - Agenda reboot as 03:00\n"
     )
-    # Removi o parse_mode="Markdown" para evitar qualquer erro de sintaxe
     bot.send_message(message.chat.id, texto_menu)
 
 @bot.message_handler(commands=['status'])
@@ -109,7 +107,6 @@ def cmd_portas(message):
     if not verificar_usuario(message): return
     bot.reply_to(message, "🔌 Lendo os sensores das portas Ethernet...")
     
-    # Script nativo do MikroTik para rodar interface por interface checando velocidade e status do link
     cmd = ':foreach i in=[/interface ethernet find] do={:local run [/interface get $i running]; :local nome [/interface get $i name]; :if ($run) do={/interface ethernet monitor $i once do={:put ("\E2\9C\85 " . $nome . " | UP | " . $rate)}} else={:put ("\E2\9D\8C " . $nome . " | DOWN | Sem Link")}}'
     saida = executar_comando_ssh(cmd)
     
@@ -120,7 +117,6 @@ def cmd_trafego(message):
     if not verificar_usuario(message): return
     bot.reply_to(message, "📈 Coletando consumo em tempo real...")
     
-    # Executa o monitoramento de tráfego do MikroTik para todas as interfaces no momento exato e estrutura em CSV
     cmd = '/interface monitor-traffic [find] once do={:put ($name . "," . $"rx-bits-per-second" . "," . $"tx-bits-per-second")}'
     saida = executar_comando_ssh(cmd)
     
@@ -134,16 +130,13 @@ def cmd_trafego(message):
         if len(partes) == 3:
             nome = partes[0].strip()
             try:
-                # O MikroTik devolve bps puro. Dividimos por 1.000.000 para achar os Megabits de rede (Mbps)
                 rx_mbps = int(partes[1].strip()) / 1000000
                 tx_mbps = int(partes[2].strip()) / 1000000
                 total_mbps = rx_mbps + tx_mbps
                 
-                # Ignora interfaces zeradas ou de loopback irrelevante
                 if total_mbps > 0.1:
                     resultado.append(f"🌐 *{nome}*: ⬇️ {rx_mbps:.1f} Mbps | ⬆️ {tx_mbps:.1f} Mbps")
                 
-                # Verifica se é a interface de maior consumo
                 if total_mbps > max_consumo:
                     max_consumo = total_mbps
                     interface_pico = f"*{nome}*\n(Tráfego Somado: `{total_mbps:.1f} Mbps`)"
@@ -169,24 +162,58 @@ def cmd_tracert(message):
     alvo = argumentos[1].strip()
     bot.reply_to(message, f"🛤️ Realizando Traceroute para *{alvo}*... Aguarde, isso leva alguns segundos.", parse_mode="Markdown")
     
-    # O count=4 garante que o processo vai encerrar e enviar de volta
     saida = executar_comando_ssh(f"/tool traceroute address={alvo} count=4")
     bot.send_message(message.chat.id, f"```\n{saida}\n```", parse_mode="Markdown")
 
 @bot.message_handler(commands=['clientes'])
 def cmd_clientes(message):
     if not verificar_usuario(message): return
-    bot.reply_to(message, "👥 Contando clientes ativos...")
+    bot.reply_to(message, "👥 Coletando e separando clientes ativos por bloco de IP... Isso pode levar alguns segundos.")
     
+    # 1. Busca os clientes PPPoE
     count_pppoe = executar_comando_ssh(":put [:len [/ppp active find]]")
-    count_dhcp = executar_comando_ssh(":put [:len [/ip dhcp-server lease find status=bound]]")
     
-    relatorio = (
-        f"📡 *Clientes Conectados Agora:*\n\n"
-        f"🔒 *PPPoE Ativos:* `{count_pppoe}`\n"
-        f"🌐 *DHCP Ativos:* `{count_dhcp}`"
+    # 2. Script MikroTik: Varre todos os blocos de IP e agrupa apenas os leases ativos (bound)
+    script_routeros = (
+        ':local out ""; '
+        ':foreach a in=[/ip address find dynamic=no disabled=no] do={'
+            ':local cidr [/ip address get $a address]; '
+            ':local net [/ip address get $a network]; '
+            ':local comment [/ip address get $a comment]; '
+            ':local titulo ""; '
+            # Usa o comentário da interface caso exista (Ex: WI-FI_CASA), senão usa a Rede
+            ':if ([:len $comment] > 0) do={ :set titulo ($comment . " (" . $net . ")") } else={ :set titulo ("Rede " . $net) }; '
+            ':local leases ""; '
+            ':local count 0; '
+            # Busca todos os leases que estao "bound" e fazem parte do bloco de rede verificado
+            ':foreach l in=[/ip dhcp-server lease find status=bound address in $cidr] do={'
+                ':local lip [/ip dhcp-server lease get $l address]; '
+                ':local lhost [/ip dhcp-server lease get $l host-name]; '
+                ':if ([:len $lhost] = 0) do={ :set lhost "Desconhecido" }; '
+                ':set leases ($leases . "  🔹 `" . $lip . "` - " . $lhost . "\\n"); '
+                ':set count ($count + 1); '
+            '}; '
+            # Se encontrou leases nesse bloco, adiciona ao relatório
+            ':if ($count > 0) do={'
+                ':set out ($out . "🗂️ *" . $titulo . "* - Ativos: " . $count . "\\n" . $leases . "\\n"); '
+            '} '
+        '}; '
+        ':put $out'
     )
-    bot.send_message(message.chat.id, relatorio, parse_mode="Markdown")
+    
+    redes_dhcp = executar_comando_ssh(script_routeros)
+    
+    if not redes_dhcp or "syntax error" in redes_dhcp.lower():
+         redes_dhcp = "Nenhum cliente DHCP ativo encontrado nas redes ou erro de processamento."
+
+    relatorio = f"📡 *Clientes Conectados Agora:*\n\n🔒 *PPPoE Ativos:* `{count_pppoe}`\n\n{redes_dhcp}"
+    
+    # Prevenção: O Telegram aceita no máximo 4096 caracteres por mensagem
+    if len(relatorio) > 4000:
+        for i in range(0, len(relatorio), 4000):
+            bot.send_message(message.chat.id, relatorio[i:i+4000], parse_mode="Markdown")
+    else:
+        bot.send_message(message.chat.id, relatorio, parse_mode="Markdown")
 
 @bot.message_handler(commands=['desativar_porta'])
 def cmd_desativar_porta(message):
